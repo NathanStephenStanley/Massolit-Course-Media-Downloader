@@ -17,6 +17,41 @@ try:
 except ImportError:
     tqdm = None
 
+# enable ANSI color support on Windows terminals
+if platform.system() == "Windows":
+    os.system("")
+
+
+class Colors:
+    """ANSI color codes for terminal formatting."""
+    RESET = "\033[0m"
+    BOLD = "\033[1m"
+    DIM = "\033[2m"
+    
+    # Foreground colors
+    CYAN = "\033[96m"
+    GREEN = "\033[92m"
+    YELLOW = "\033[93m"
+    RED = "\033[91m"
+    MAGENTA = "\033[95m"
+    BLUE = "\033[94m"
+    GRAY = "\033[90m"
+
+
+def print_banner() -> None:
+    """Prints a styled CLI banner."""
+    banner = f"""
+{Colors.CYAN}{Colors.BOLD}====================================================================={Colors.RESET}
+{Colors.MAGENTA}{Colors.BOLD}                      MASSOLIT COURSE DOWNLOADER                      {Colors.RESET}
+{Colors.CYAN}{Colors.BOLD}====================================================================={Colors.RESET}
+"""
+    print(banner)
+
+
+def tag(label: str, color: str) -> str:
+    """Formats a status tag like [+] or [!] with bold colors."""
+    return f"{color}{Colors.BOLD}[{label}]{Colors.RESET}"
+
 
 SSL_CONTEXT = ssl.create_default_context(cafile=certifi.where())
 
@@ -44,7 +79,7 @@ class CourseParser(HTMLParser):
     """Parses course overview pages for all individual lesson URLs and media IDs."""
     def __init__(self) -> None:
         super().__init__()
-        self.lessons: list[tuple[str, str]] = []  # [(slug, media_id)]
+        self.lessons: list[tuple[str, str]] = []
 
     def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
         if tag != "a":
@@ -95,14 +130,12 @@ def download_and_clean_transcript(media_id: str, transcript_path: str) -> None:
         with urlopen(request, timeout=15, context=SSL_CONTEXT) as response:
             content = response.read().decode("utf-8", errors="replace")
 
-        # Strip VTT timestamps and header tags to format clean readable text
         lines = content.splitlines()
         cleaned_lines = []
         for line in lines:
             line = line.strip()
             if not line or line.startswith("WEBVTT") or "-->" in line or line.isdigit():
                 continue
-            # Remove inline formatting tags like <v ...> or <b>
             clean_line = re.sub(r"<[^>]+>", "", line)
             if clean_line and (not cleaned_lines or cleaned_lines[-1] != clean_line):
                 cleaned_lines.append(clean_line)
@@ -110,7 +143,6 @@ def download_and_clean_transcript(media_id: str, transcript_path: str) -> None:
         with open(transcript_path, "w", encoding="utf-8") as f:
             f.write("\n".join(cleaned_lines))
     except Exception:
-        # Ignore transcript download errors if unavailable for a specific lesson
         pass
 
 
@@ -130,10 +162,8 @@ def parse_wistia_payload(jsonp_data: str, target_height: int | None | str) -> tu
     assets = media.get("assets", [])
     captions = media.get("captions", [])
 
-    # Extract Subtitles (.vtt)
     subtitle_url = captions[0].get("url") if captions else None
     
-    # Filter out storyboard grids and non-video assets[cite: 1]
     valid_video_assets = [
         a for a in assets
         if a.get("url", "").endswith(".bin")
@@ -145,13 +175,11 @@ def parse_wistia_payload(jsonp_data: str, target_height: int | None | str) -> tu
     if not valid_video_assets:
         raise ValueError("No valid video stream found in media payload.")
 
-    # Match exact resolution if target_height is specified integer
     if isinstance(target_height, int):
         for asset in valid_video_assets:
             if asset.get("height") == target_height:
                 return asset["url"], subtitle_url, target_height, duration
 
-    # Fallback to highest available video resolution
     best_asset = max(valid_video_assets, key=lambda a: a.get("height", 0))
     return best_asset["url"], subtitle_url, best_asset.get("height", 0), duration
 
@@ -192,32 +220,27 @@ def download_media_task(
     is_audio_only: bool,
     position: int = 0
 ) -> None:
-    """Task worker to process and download an individual video or audio stream with metadata and transcripts."""
+    """Task worker to process and download an individual video or audio stream."""
     jsonp_raw = fetch_wistia_jsonp(media_id)
     stream_url, subtitle_url, actual_height, duration = parse_wistia_payload(jsonp_raw, target_height)
 
-    # File Naming with Ordered Prefixes
     ext = "mp3" if is_audio_only else "mp4"
     quality_label = "audio" if is_audio_only else f"{actual_height}p"
     base_name = f"{seq_num:02d}_{slug}_{quality_label}"
     filename = f"{base_name}.{ext}"
     output_path = os.path.join(output_dir, filename)
 
-    # Fetch and save clean transcript (.txt)
     transcript_path = os.path.join(output_dir, f"{seq_num:02d}_{slug}_transcript.txt")
     if not os.path.exists(transcript_path):
         download_and_clean_transcript(media_id, transcript_path)
 
-    # File Skipping Check
     if os.path.exists(output_path) and os.path.getsize(output_path) > 100_000:
-        print(f"[=] Skipping {filename} (already downloaded).")
+        print(f"{tag('SKIP', Colors.YELLOW)} {Colors.GRAY}{filename} (already downloaded){Colors.RESET}")
         return
 
-    # Metadata Strings
     clean_title = slug.replace("-", " ").title()
     clean_album = course_name.replace("-", " ").title()
 
-    # Construct ffmpeg Command
     cmd = [
         "ffmpeg",
         "-y",
@@ -225,11 +248,9 @@ def download_media_task(
         "-i", stream_url,
     ]
 
-    # Subtitle Input
     if subtitle_url and not is_audio_only:
         cmd.extend(["-i", subtitle_url])
 
-    # Audio-only or Video Mode Setup
     if is_audio_only:
         cmd.extend(["-vn", "-c:a", "mp3", "-b:a", "192k"])
     else:
@@ -240,7 +261,6 @@ def download_media_task(
                 "-metadata:s:s:0", "language=eng"
             ])
 
-    # Metadata Tagging
     cmd.extend([
         "-metadata", f"title={clean_title}",
         "-metadata", f"album={clean_album}",
@@ -261,17 +281,17 @@ def download_media_task(
     except FileNotFoundError:
         raise RuntimeError("ffmpeg is not installed or not in system PATH.")
 
-    # Progress Tracking via tqdm
     if tqdm and duration > 0:
+        desc_label = f"{Colors.CYAN}[{seq_num:02d}]{Colors.RESET} {Colors.BOLD}{slug[:16]}...{Colors.RESET}"
         pbar = tqdm(
             total=int(duration),
-            desc=f"[{seq_num:02d}] {slug[:18]}...",
+            desc=desc_label,
             unit="s",
             leave=False,
             file=sys.stderr,
             position=position,
             dynamic_ncols=True,
-            bar_format="{l_bar}{bar:15}| {n_fmt}/{total_fmt}s",
+            bar_format="{l_bar}" + Colors.BLUE + "{bar:15}" + Colors.RESET + "| {n_fmt}/{total_fmt}s",
         )
         last_out_time = 0.0
 
@@ -292,26 +312,26 @@ def download_media_task(
         pbar.n = int(duration)
         pbar.refresh()
         pbar.close()
-        print(f"[+] Complete: {filename}")
+        print(f"{tag('DONE', Colors.GREEN)} {Colors.BOLD}{filename}{Colors.RESET}")
     else:
-        print(f"[+] Downloading {filename}...")
+        print(f"{tag('DOWN', Colors.BLUE)} Downloading {filename}...")
         process.wait()
-        print(f"[+] Complete: {filename}")
+        print(f"{tag('DONE', Colors.GREEN)} {filename}")
 
     if process.returncode != 0:
         raise RuntimeError(f"ffmpeg download failed for {filename}")
 
 
 def prompt_quality_selection() -> tuple[int | None | str, bool]:
-    print("\nSelect Format & Quality Preference:")
-    print("  [1] 1080p")
-    print("  [2] 720p")
-    print("  [3] 480p")
-    print("  [4] 360p")
-    print("  [5] Highest Available (Default)")
-    print("  [6] Audio Only (.mp3 Podcast Mode)")
+    print(f"\n{Colors.BOLD}{Colors.MAGENTA}--- Quality & Format Selection ---{Colors.RESET}")
+    print(f"  {Colors.CYAN}[1]{Colors.RESET} 1080p Full HD")
+    print(f"  {Colors.CYAN}[2]{Colors.RESET} 720p HD")
+    print(f"  {Colors.CYAN}[3]{Colors.RESET} 480p SD")
+    print(f"  {Colors.CYAN}[4]{Colors.RESET} 360p Low Quality")
+    print(f"  {Colors.CYAN}[5]{Colors.RESET} Highest Available {Colors.GRAY}(Default){Colors.RESET}")
+    print(f"  {Colors.CYAN}[6]{Colors.RESET} Audio Only {Colors.YELLOW}(.mp3 Podcast Mode){Colors.RESET}")
     
-    choice = input("Enter choice (1-6) [Default: 5]: ").strip()
+    choice = input(f"\n{Colors.BOLD}Enter choice (1-6) [Default: 5]: {Colors.RESET}").strip()
     
     if choice == "6":
         return "audio", True
@@ -321,21 +341,22 @@ def prompt_quality_selection() -> tuple[int | None | str, bool]:
 
 
 def prompt_lesson_selection(lessons: list[tuple[str, str]]) -> list[tuple[int, str, str]]:
-    print("\nAvailable Lessons in Course:")
-    print("  [0] Whole Course (All Videos)")
+    print(f"\n{Colors.BOLD}{Colors.MAGENTA}--- Available Course Lessons ---{Colors.RESET}")
+    print(f"  {Colors.YELLOW}[0]{Colors.RESET} {Colors.BOLD}Whole Course (All {len(lessons)} Lessons){Colors.RESET}")
     for idx, (slug, _) in enumerate(lessons, 1):
         clean_title = slug.replace("-", " ").title()
-        print(f"  [{idx}] {clean_title}")
+        print(f"  {Colors.CYAN}[{idx:02d}]{Colors.RESET} {clean_title}")
 
-    choice = input(f"\nSelect video numbers or ranges (e.g., '1', '1, 3, 5', '1-4') [Default: 0]: ").strip()
+    choice = input(f"\n{Colors.BOLD}Select lessons or ranges (e.g. '1', '1, 3, 5', '1-4') [Default: 0]: {Colors.RESET}").strip()
     selected_numbers = parse_range_input(choice, len(lessons))
     
     return [(idx, lessons[idx - 1][0], lessons[idx - 1][1]) for idx in selected_numbers]
 
 
 def main() -> int:
+    print_banner()
     try:
-        raw_url = input("Paste Massolit URL: ").strip()
+        raw_url = input(f"{tag('INPUT', Colors.CYAN)} Paste Massolit URL: ").strip()
         parsed = urlparse(raw_url)
 
         if "massolit.io" not in parsed.netloc:
@@ -349,7 +370,7 @@ def main() -> int:
             course_url = raw_url
             course_slug = path_parts[-1]
 
-        print(f"[+] Fetching course details from: {course_url}")
+        print(f"{tag('FETCH', Colors.BLUE)} Scraping course metadata from: {Colors.CYAN}{course_url}{Colors.RESET}")
         html = fetch_massolit_html(course_url)
 
         parser = CourseParser()
@@ -372,9 +393,8 @@ def main() -> int:
         output_dir = os.path.join(script_dir, course_slug)
         os.makedirs(output_dir, exist_ok=True)
 
-        print(f"\n[+] Processing {len(selected_tasks)} file(s) into: /{course_slug}\n")
+        print(f"\n{tag('START', Colors.GREEN)} Processing {len(selected_tasks)} file(s) into: {Colors.BOLD}/{course_slug}{Colors.RESET}\n")
 
-        # Multi-Threaded Parallel Downloads
         max_workers = min(3, len(selected_tasks))
         total_tracks = len(unique_lessons)
 
@@ -397,11 +417,11 @@ def main() -> int:
             for future in as_completed(futures):
                 future.result()
 
-        print("\n[+] All selected downloads complete!")
+        print(f"\n{tag('SUCCESS', Colors.GREEN)} {Colors.BOLD}All selected downloads complete!{Colors.RESET}")
         send_desktop_notification("Massolit Downloader", f"Finished downloading {len(selected_tasks)} lesson(s) from {course_slug}!")
 
     except (HTTPError, URLError, UnicodeError, ValueError, json.JSONDecodeError, RuntimeError) as error:
-        print(f"Error: {error}", file=sys.stderr)
+        print(f"\n{tag('ERROR', Colors.RED)} {Colors.RED}{error}{Colors.RESET}", file=sys.stderr)
         return 1
     return 0
 
