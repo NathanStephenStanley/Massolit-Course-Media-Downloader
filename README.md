@@ -38,7 +38,7 @@ pip install tqdm certifi
 1. Clone or download this repository:
    ```bash
    git clone https://github.com/NathanStephenStanley/Massolit-Course-Media-Downloader.git
-   cd massolit-downloader
+   cd Massolit-Course-Media-Downloader
    ```
 
 2. Run the script:
